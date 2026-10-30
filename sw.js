@@ -1,6 +1,6 @@
 /* Costa's POS: guarda o app no aparelho para abrir sem internet.
    Ao mudar o index.html, muda também o número da versão abaixo. */
-const VERSAO = 'costas-pos-v19';
+const VERSAO = 'costas-pos-v20';
 const BASE = ['./', 'index.html', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png', 'icons/apple-touch-icon.png'];
 
 self.addEventListener('install', e => {

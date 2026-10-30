@@ -1064,6 +1064,8 @@ const DEFAULT_MENU=[
  {id:'m14',name:'Cerveja',cat:'Bebidas',price:1200,on:true}
 ];
 const LS='costas-pos-v1';
+const CLOUD_URL='https://jimucduakzozhhugiwmj.supabase.co';
+const CLOUD_PUBLIC_KEY='sb_publishable_b5Qp1VfjxSYd6oiQJDvpqg_-p3hnQgq';
 const STANDALONE=!(window.claude&&window.claude.use);
 const lsGet=(k,d)=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch(e){return d}};
 const lsSet=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch(e){lsFull()}};
@@ -1102,6 +1104,11 @@ const lan={
   conflictNotice:''
 };
 if(!lan.deviceName){lan.deviceName=/iPhone|iPad/i.test(navigator.userAgent)?'iPhone':/Android/i.test(navigator.userAgent)?'Android':'Dispositivo';lsSet(LS+'-lan-name',lan.deviceName)}
+const cloud={
+  enabled:!!(CLOUD_URL&&CLOUD_PUBLIC_KEY),active:false,session:lsGet(LS+'-cloud-session',null),
+  ownerId:'',revision:0,base:null,pollTimer:null,pushTimer:null,pushing:false,
+  authBusy:false,error:'',email:'',conflictNotice:''
+};
 
 /* ---------- armazenamento ---------- */
 function setSync(s){ui.sync=s;paintChips()}
@@ -1296,6 +1303,227 @@ function lanStartPolling(){
   lan.pollTimer=setInterval(lanPoll,1800);
   lanPoll();
 }
+function cloudHeaders(json){
+  const headers={apikey:CLOUD_PUBLIC_KEY};
+  if(json)headers['Content-Type']='application/json';
+  if(cloud.session&&cloud.session.access_token)headers.Authorization='Bearer '+cloud.session.access_token;
+  return headers;
+}
+async function cloudFetch(path,options,authenticated,retry){
+  const useSession=authenticated!==false,canRetry=retry!==false;
+  const request=Object.assign({headers:cloudHeaders(false),cache:'no-store'},options||{});
+  request.headers=Object.assign({},cloudHeaders(false),options&&options.headers||{});
+  if(!useSession)delete request.headers.Authorization;
+  const response=await fetch(CLOUD_URL+path,request);
+  if(response.status===401&&useSession&&canRetry&&cloud.session&&path.indexOf('/auth/v1/token')!==0){
+    await cloudRefresh();
+    return cloudFetch(path,options,true,false);
+  }
+  let data=null;
+  if(response.status!==204){const text=await response.text();if(text){try{data=JSON.parse(text)}catch(e){throw new Error('O Supabase devolveu uma resposta inválida.')}}}
+  if(!response.ok){
+    const message=data&&(data.msg||data.message||data.error_description||data.error);
+    throw Object.assign(new Error(message||'Falha na ligação ao Supabase.'),{status:response.status,data:data});
+  }
+  return {response:response,data:data};
+}
+function cloudSaveSession(session){
+  if(!session||!session.access_token||!session.refresh_token||!session.user||!session.user.id)
+    throw new Error('O Supabase não devolveu uma sessão válida.');
+  session.expires_at=Number(session.expires_at)||Math.floor(Date.now()/1000)+(Number(session.expires_in)||3600);
+  cloud.session=session;cloud.ownerId=session.user.id;
+  lsSet(LS+'-cloud-session',session);
+}
+function cloudClearSession(){
+  clearInterval(cloud.pollTimer);clearTimeout(cloud.pushTimer);
+  cloud.pollTimer=null;cloud.pushTimer=null;cloud.active=false;cloud.ownerId='';
+  cloud.revision=0;cloud.base=null;cloud.session=null;
+  lsSet(LS+'-cloud-session',null);
+}
+async function cloudRefresh(){
+  if(!cloud.session||!cloud.session.refresh_token)throw new Error('A sessão cloud expirou. Inicia sessão novamente.');
+  try{
+    const result=await cloudFetch('/auth/v1/token?grant_type=refresh_token',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({refresh_token:cloud.session.refresh_token})
+    },false,false);
+    cloudSaveSession(result.data);
+    return result.data;
+  }catch(error){
+    if(error.status===400||error.status===401){
+      cloudClearSession();cloud.error='A sessão cloud expirou. Inicia sessão novamente.';
+    }
+    throw error;
+  }
+}
+function cloudSnapshot(){return lanSnapshot()}
+function cloudHasData(snapshot){
+  if(!snapshot||!snapshot.state)return false;
+  const s=snapshot.state;
+  return !!((s.users&&s.users.length)||(s.company&&(s.company.setupComplete||String(s.company.name||'').trim()))||
+    (s.orders&&Object.keys(s.orders).length)||(snapshot.sales&&snapshot.sales.length)||
+    (snapshot.shifts&&snapshot.shifts.length)||(snapshot.days&&snapshot.days.length)||
+    (snapshot.stk&&snapshot.stk.produtos&&snapshot.stk.produtos.length)||(snapshot.smovs&&snapshot.smovs.length));
+}
+function cloudApplySnapshot(snapshot){
+  if(!snapshot||!snapshot.state||!Array.isArray(snapshot.sales)||!Array.isArray(snapshot.shifts)||!Array.isArray(snapshot.days))
+    throw new Error('A base de dados cloud contém um estado incompleto.');
+  state=norm(clone(snapshot.state));
+  sales=snapshot.sales.slice(0,3000);shifts=snapshot.shifts.slice(0,400);days=snapshot.days.slice(0,400);
+  if(snapshot.stk)stk=normStk(clone(snapshot.stk));
+  if(Array.isArray(snapshot.smovs))smovs=snapshot.smovs.slice(0,500);
+  lsSet(LS+'-state',state);persistLists();lsSet(SLS,stk);lsSet(SLS+'-movs',smovs);
+  if(ui.ready)render();
+  stSubSales();stRender();
+}
+async function cloudGetRow(){
+  const filter='?select=owner_id,snapshot,revision,updated_at&owner_id=eq.'+encodeURIComponent(cloud.ownerId)+'&limit=1';
+  const result=await cloudFetch('/rest/v1/pos_cloud_state'+filter);
+  return Array.isArray(result.data)?result.data[0]||null:null;
+}
+function cloudSetBase(snapshot,revision){
+  cloud.base=clone(snapshot);cloud.revision=Number(revision)||0;
+}
+async function cloudCreateRow(snapshot){
+  const result=await cloudFetch('/rest/v1/pos_cloud_state',{
+    method:'POST',headers:{'Content-Type':'application/json',Prefer:'return=representation'},
+    body:JSON.stringify({owner_id:cloud.ownerId,snapshot:snapshot,revision:1,updated_at:new Date().toISOString()})
+  });
+  return Array.isArray(result.data)?result.data[0]||null:null;
+}
+async function cloudLoadState(){
+  const local=cloudSnapshot();
+  let remote=await cloudGetRow();
+  if(!remote){
+    try{
+      remote=await cloudCreateRow(local);
+      if(!remote)remote={snapshot:local,revision:1};
+      cloudApplySnapshot(local);cloudSetBase(local,remote.revision);
+      return;
+    }
+    catch(error){
+      if(error.status!==409)throw error;
+      remote=await cloudGetRow();
+      if(!remote)throw error;
+    }
+  }
+  let selected=remote.snapshot,needsPush=false;
+  if(cloudHasData(local)&&!lanEqual(local,remote.snapshot)){
+    if(!cloudHasData(remote.snapshot)){selected=local;needsPush=true}
+    else{
+      const merged=lanJoinExistingData(remote.snapshot,local);
+      selected=merged.snapshot;needsPush=!lanEqual(selected,remote.snapshot);
+    }
+  }
+  cloudApplySnapshot(selected);cloudSetBase(remote.snapshot,remote.revision);
+  if(needsPush)cloudSchedulePush();
+}
+function cloudSchedulePush(){
+  if(!cloud.active)return;
+  clearTimeout(cloud.pushTimer);
+  cloud.pushTimer=setTimeout(()=>cloudPush().catch(error=>{
+    setSync('error');
+    if(error&&error.message)toast('Não foi possível sincronizar: '+error.message);
+  }),500);
+}
+async function cloudPush(){
+  if(!cloud.active||cloud.pushing)return;
+  cloud.pushing=true;
+  const sent=cloudSnapshot(),expected=cloud.revision;
+  try{
+    const query='?owner_id=eq.'+encodeURIComponent(cloud.ownerId)+'&revision=eq.'+encodeURIComponent(expected);
+    const result=await cloudFetch('/rest/v1/pos_cloud_state'+query,{
+      method:'PATCH',headers:{'Content-Type':'application/json',Prefer:'return=representation'},
+      body:JSON.stringify({snapshot:sent,revision:expected+1,updated_at:new Date().toISOString()})
+    });
+    const updated=Array.isArray(result.data)?result.data[0]:null;
+    if(updated){
+      cloudSetBase(sent,updated.revision);cloud.conflictNotice='';setSync('cloud');
+      if(!lanEqual(cloudSnapshot(),sent))cloudSchedulePush();
+      return;
+    }
+    const remote=await cloudGetRow();
+    if(!remote)throw new Error('Não foi encontrada a linha cloud deste restaurante.');
+    const merged=lanMergeSnapshots(cloud.base,cloudSnapshot(),remote.snapshot);
+    cloudApplySnapshot(merged.snapshot);cloudSetBase(remote.snapshot,remote.revision);
+    if(merged.conflicts.length){
+      const key=merged.conflicts.join(', ');setSync('error');
+      if(cloud.conflictNotice!==key){cloud.conflictNotice=key;toast('Conflito de sincronização. A versão cloud foi mantida; revê: '+merged.conflicts[0])}
+    }else if(!lanEqual(merged.snapshot,remote.snapshot))cloudSchedulePush();
+    else{cloud.conflictNotice='';setSync('cloud')}
+  }finally{cloud.pushing=false}
+}
+async function cloudPoll(){
+  if(!cloud.active)return;
+  try{
+    const remote=await cloudGetRow();
+    if(!remote)throw new Error('Não foi encontrada a linha cloud deste restaurante.');
+    if(Number(remote.revision)===cloud.revision){
+      if(cloud.base&&!lanEqual(cloudSnapshot(),cloud.base)){setSync('saving');cloudSchedulePush()}
+      else setSync('cloud');
+      return;
+    }
+    const active=document.activeElement;
+    if(active&&/^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName))return;
+    const merged=lanMergeSnapshots(cloud.base,cloudSnapshot(),remote.snapshot);
+    cloudApplySnapshot(merged.snapshot);cloudSetBase(remote.snapshot,remote.revision);
+    if(merged.conflicts.length){
+      const key=merged.conflicts.join(', ');setSync('error');
+      if(cloud.conflictNotice!==key){cloud.conflictNotice=key;toast('Conflito de sincronização. A versão cloud foi mantida; revê: '+merged.conflicts[0])}
+    }else if(!lanEqual(merged.snapshot,remote.snapshot))cloudSchedulePush();
+    else{cloud.conflictNotice='';setSync('cloud')}
+  }catch(error){setSync('error')}
+}
+function cloudStartPolling(){
+  clearInterval(cloud.pollTimer);
+  cloud.pollTimer=setInterval(cloudPoll,4000);
+  cloudPoll();
+}
+async function cloudAttach(){
+  if(!cloud.enabled)return false;
+  if(!cloud.session){setSync('local');markReady();return true}
+  try{
+    setSync('loading');
+    if(!cloud.session.access_token||Number(cloud.session.expires_at||0)<Math.floor(Date.now()/1000)+45)
+      await cloudRefresh();
+    cloud.ownerId=cloud.session.user.id;cloud.active=true;
+    await cloudLoadState();
+    cloud.error='';setSync('cloud');cloudStartPolling();markReady();
+  }catch(error){
+    cloud.active=false;
+    if(error.status===400||error.status===401){
+      cloudClearSession();cloud.error='A sessão cloud expirou. Inicia sessão novamente.';
+    }else cloud.error='Não foi possível ligar à cloud. Os dados locais foram mantidos.';
+    setSync(error.status===400||error.status===401?'local':'error');
+    markReady();
+  }
+  return true;
+}
+async function cloudLogin(){
+  const email=($('#cloud-email')||{}).value.trim(),password=($('#cloud-password')||{}).value;
+  if(!email||!password){cloud.error='Indica o e-mail e a palavra-passe cloud.';renderLogin();return}
+  if(cloud.authBusy)return;
+  cloud.email=email;
+  cloud.authBusy=true;cloud.error='A iniciar sessão…';renderLogin();
+  try{
+    const result=await cloudFetch('/auth/v1/token?grant_type=password',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({email:email,password:password})
+    },false,false);
+    cloudSaveSession(result.data);cloud.active=true;cloud.error='';
+    await cloudLoadState();setSync('cloud');cloudStartPolling();markReady();render();
+    toast('Conta cloud ligada. Dados sincronizados.');
+  }catch(error){
+    cloud.active=false;cloud.error=error.status===400||error.status===401?
+      'E-mail ou palavra-passe inválidos. Confirma os dados da conta Supabase.':
+      'Não foi possível ligar à cloud. Confirma a internet e tenta novamente.';
+    setSync('error');
+  }finally{cloud.authBusy=false;if(!cloud.active)renderLogin()}
+}
+function cloudLogout(){
+  if(!window.confirm('Desligar a conta cloud neste aparelho? Os dados guardados localmente não serão apagados.'))return;
+  cloudClearSession();cloud.error='';setSync('local');render();toast('Conta cloud desligada neste aparelho.');
+}
 function lanNormalizePairingCode(value){
   const normalized=String(value||'').normalize?String(value||'').normalize('NFKC'):String(value||'');
   const digitStarts=[0x30,0x660,0x6f0,0x7c0,0x966,0x9e6,0xa66,0xae6,0xb66,0xbe6,0xc66,0xce6,0xd66,0xde6,0xe50,0xed0,0xf20,0x1040,0x1090,0x17e0,0x1810,0x1946,0x19d0,0x1a80,0x1a90,0x1b50,0x1bb0,0x1c40,0x1c50,0xa620,0xa8d0,0xa900,0xa9d0,0xa9f0,0xaa50,0xabf0,0x104a0,0x10d30,0x11066,0x110f0,0x11136,0x111d0,0x112f0,0x11450,0x114d0,0x11650,0x116c0,0x11730,0x118e0,0x11950,0x11c50,0x11d50,0x11da0,0x16a60,0x16ac0,0x16b50,0x1d7ce,0x1e140,0x1e2f0,0x1e4f0,0x1e950,0x1fbf0];
@@ -1425,6 +1653,7 @@ async function lanOpenTable(table){
 function save(){
   lsSet(LS+'-state',state);
   if(lan.active){setSync('saving');lanSchedulePush()}
+  if(cloud.active){setSync('saving');cloudSchedulePush()}
   if(!db)return;
   setSync('saving');
   rev++;dirty=true;clearTimeout(saveTimer);saveTimer=setTimeout(flush,300);
@@ -1558,7 +1787,7 @@ function qSend(x){
   const r=db.doc(x.path);
   (x.data?r.set(x.data):r.delete()).then(()=>{qDone(x.path,x.data);setSync('cloud')}).catch(()=>setSync('error'));
 }
-function dbPut(path,data){if(lan.active){lanSchedulePush();return}if(STANDALONE)return;qPush(path,data);qSend({path:path,data:data})}
+function dbPut(path,data){if(lan.active){lanSchedulePush();return}if(cloud.active){cloudSchedulePush();return}if(STANDALONE)return;qPush(path,data);qSend({path:path,data:data})}
 function qRetry(){pend().forEach(qSend)}
 function mergePend(list,coll,key){
   const q=pend().filter(x=>x.path.indexOf(coll+'/')===0);
@@ -1588,6 +1817,7 @@ function addShiftClose(c){
 async function attach(){
   try{
     if(await lanAttach())return;
+    if(STANDALONE&&await cloudAttach())return;
     const c=window.claude;
     if(!c||!c.use){markReady();return}
     db=await c.use('db');
@@ -1740,8 +1970,20 @@ function renderLogin(){
     <div class="pad">`+['1','2','3','4','5','6','7','8','9'].map(k=>`<button data-a="pin" data-k="${k}">${k}</button>`).join('')+`<span></span><button data-a="pin" data-k="0">0</button><button data-a="pin" data-k="x" aria-label="Apagar">⌫</button></div>`;
     L.shake=false;
   }
+  if(ui.ready)h+=cloudAccessMarkup();
   if(lan.available&&!lan.host&&!lan.paired)h+=lanPairMarkup();
   $('#app').innerHTML=h+'</div>';
+}
+function cloudAccessMarkup(){
+  if(!cloud.enabled)return '';
+  if(cloud.active)return `<section class="card settings-panel"><h3>Sincronização cloud ativa</h3><p class="sub" style="margin:0">Este aparelho está ligado à conta ${esc(cloud.session&&cloud.session.user&&cloud.session.user.email||'do dono')}. Os dados sincronizam pela internet.</p></section>`;
+  if(cloud.session)return `<section class="card settings-panel"><h3>Sincronização cloud</h3><p class="sub" style="margin:0">${esc(cloud.error||'A sessão está guardada neste aparelho, mas ainda não foi possível sincronizar. Os dados locais permanecem disponíveis.')}</p><button class="btn" type="button" data-a="cloudReconnect">Tentar ligar novamente</button></section>`;
+  return `<section class="card settings-panel"><h3>Sincronizar entre aparelhos</h3><p class="sub" style="margin:0">Inicia sessão com o e-mail cloud do dono para carregar os dados do restaurante. Os PINs da equipa continuam a ser usados neste aparelho.</p><div class="field"><label for="cloud-email">E-mail do dono</label><input class="in txt" id="cloud-email" type="email" autocomplete="username" value="${esc(cloud.email)}"></div><div class="field"><label for="cloud-password">Palavra-passe cloud</label><input class="in txt" id="cloud-password" type="password" autocomplete="current-password"></div><div class="err" role="alert">${esc(cloud.error)}</div><button class="btn primary" type="button" data-a="cloudLogin" ${cloud.authBusy?'disabled':''}>${cloud.authBusy?'A ligar…':'Ligar à conta cloud'}</button></section>`;
+}
+function cloudSettingsMarkup(){
+  if(!cloud.enabled)return '';
+  if(cloud.active)return `<section class="card settings-panel"><h3>Sincronização pela internet</h3><p class="sub" style="margin:0">Ligado como <b>${esc(cloud.session&&cloud.session.user&&cloud.session.user.email||'dono')}</b>. Os dados sincronizam entre aparelhos com internet e também ficam guardados neste aparelho.</p>${ui.user&&ui.user.role==='dono'?'<button class="btn" type="button" data-a="cloudLogout">Desligar conta cloud neste aparelho</button>':''}</section>`;
+  return `<section class="card settings-panel"><h3>Sincronização pela internet</h3><p class="sub" style="margin:0">${esc(cloud.error||'Liga a conta cloud do dono para sincronizar os dados entre aparelhos. Os dados locais não são apagados.')}</p><button class="btn" type="button" data-a="cloudConnect">Ligar conta cloud</button></section>`;
 }
 function lanPairMarkup(){
   return `<section class="card lan-pair"><h3>Ligar ao PC pela rede local</h3><p class="sub" style="margin:0">Abre o COBU ERP no PC, na mesma rede Wi‑Fi, e cola o código atual copiado em Definições. Depois de ligado, este aparelho recebe os dados partilhados do restaurante. Este endereço tem armazenamento separado da PWA online; para levar vendas antigas, importa primeiro a cópia cifrada no COBU do PC.</p><div class="field"><label for="lan-pair-code">Código do PC</label><input class="in" id="lan-pair-code" inputmode="numeric" maxlength="12" autocomplete="off" placeholder="8 algarismos"></div><div class="field"><label for="lan-device-name">Nome deste aparelho</label><input class="in txt" id="lan-device-name" maxlength="60" value="${esc(lan.deviceName)}" autocomplete="off"></div><div class="err" id="lan-pair-error" role="alert"></div><button class="btn primary" type="button" data-a="lanPair">Ligar ao PC</button></section>`;
@@ -2211,8 +2453,9 @@ function vSettings(){
   let h=`<div class="view settings-view${isCorp?' corp-settings':''}"><div class="row"><h2 class="grow">Definições</h2></div><p class="sub" style="margin:0">As alterações guardam-se sozinhas.</p><div class="settings-grid">`;
   h+=companyEditorMarkup(false,true);
   h+=`<section class="card settings-panel"><h3>WhatsApp dos relatórios</h3><p class="sub" style="margin:0">O número que recebe o relatório de fecho do dia: indicativo do país e número, só algarismos. Deixa vazio para escolheres o contacto de cada vez.</p><table class="settings-table"><tbody><tr><th><label for="wa-num">Número</label></th><td><input class="in" id="wa-num" data-i="wanum" inputmode="tel" value="${esc(state.wa||'')}" placeholder="Ex.: 244 e o número"></td></tr></tbody></table></section>`;
+  h+=cloudSettingsMarkup();
   h+=lanSettingsMarkup();
-  h+=`      <section class="card settings-panel"><h3>Cópia de segurança</h3><p class="sub" style="margin:0">Os dados ficam neste aparelho e, quando ligado ao PC servidor, são sincronizados também para o PC. Faz uma cópia cifrada por semana e guarda-a separadamente. Se limpares os dados do navegador ou perderes o PC servidor, a cópia ajuda a recuperar a informação. ${window.crypto&&crypto.subtle?'As cópias usam uma palavra-passe tua, que não pode ser recuperada.':'Neste endereço HTTP local, o navegador não permite cifrar/restaurar cópias; cria e importa cópias no COBU do PC. Para migrar dados da PWA online, importa a cópia no PC antes de emparelhar este aparelho.'} "Juntar dados" também permite importar vendas e fechos; as cópias antigas sem cifragem continuam a poder ser importadas, com um aviso.</p><div class="row"><button class="btn primary" data-a="x_bkexport" ${window.crypto&&crypto.subtle?'':'disabled title="Cria a cópia cifrada no COBU do PC"'}>Guardar cópia</button><button class="btn" data-a="x_bkimport">Restaurar cópia</button><button class="btn" data-a="x_bkmergeimport">Juntar dados</button></div><input type="file" id="bk-file" accept=".json,application/json" hidden></section>
+  h+=`      <section class="card settings-panel"><h3>Cópia de segurança</h3><p class="sub" style="margin:0">Os dados ficam neste aparelho e, quando ligado ao PC servidor ou à conta cloud, são sincronizados para o destino escolhido. Faz uma cópia cifrada por semana e guarda-a separadamente. Se limpares os dados do navegador ou perderes o PC servidor, a cópia ajuda a recuperar a informação. ${window.crypto&&crypto.subtle?'As cópias usam uma palavra-passe tua, que não pode ser recuperada.':'Neste endereço HTTP local, o navegador não permite cifrar/restaurar cópias; cria e importa cópias no COBU do PC. Para migrar dados da PWA online, importa a cópia no PC antes de emparelhar este aparelho.'} "Juntar dados" também permite importar vendas e fechos; as cópias antigas sem cifragem continuam a poder ser importadas, com um aviso.</p><div class="row"><button class="btn primary" data-a="x_bkexport" ${window.crypto&&crypto.subtle?'':'disabled title="Cria a cópia cifrada no COBU do PC"'}>Guardar cópia</button><button class="btn" data-a="x_bkimport">Restaurar cópia</button><button class="btn" data-a="x_bkmergeimport">Juntar dados</button></div><input type="file" id="bk-file" accept=".json,application/json" hidden></section>
   <section class="card settings-panel"><h3>Sala</h3><p class="sub" style="margin:0">Aumenta ou diminui as mesas, muda os nomes e define um desconto automático para um lugar. O desconto entra em todos os pedidos desse lugar.</p>
   <div class="seg"><button data-a="rminus" aria-label="Menos uma mesa">−</button><b class="cnt">${nT} ${nT===1?'mesa':'mesas'}</b><button data-a="rplus" aria-label="Mais uma mesa">+</button><button data-a="rspace">+ Outro espaço</button></div></section>`;
   h+='<section class="group settings-panel"><div class="mhead">Lugares · nome e desconto automático</div><div class="settings-room-head"><span>Nome do lugar</span><span>Desconto automático</span><span>Ação</span></div>'+state.room.map(r=>{
@@ -2568,6 +2811,10 @@ function act(a,d){
   if(a.indexOf('x_')===0){xAct(a,d);return}
   switch(a){
     case 'go':if(!canGo(d.v))break;if(ui.view==='order'&&d.v!=='order')lanReleaseCurrentTable();ui.view=d.v;ui.table=null;closeSheet();render();window.scrollTo(0,0);break;
+    case 'cloudLogin':cloudLogin();break;
+    case 'cloudConnect':lock();break;
+    case 'cloudReconnect':cloudAttach().then(()=>{if(cloud.active)toast('Conta cloud ligada.');render()});break;
+    case 'cloudLogout':if(ui.user&&ui.user.role==='dono')cloudLogout();break;
     case 'lanPair':lanPair();break;
     case 'lanCopyCode':lanCopyCode();break;
     case 'menuImagePick':{const input=document.getElementById('menu-image-'+d.id);if(input)input.click();break}
@@ -2782,12 +3029,13 @@ document.addEventListener('change',e=>{
 });
 document.addEventListener('keydown',e=>{
   if(e.key==='Escape'&&ui.sheet)closeSheet();
+  if(e.key==='Enter'&&(e.target.id==='cloud-email'||e.target.id==='cloud-password')){e.preventDefault();cloudLogin()}
   if(!ui.user&&ui.ready&&ui.login.id&&!ui.login.busy){if(/^\d$/.test(e.key))pinKey(e.key);else if(e.key==='Backspace')pinKey('x')}
 });
 setInterval(()=>{if(ui.user&&ui.view==='tables'&&!ui.sheet)render()},60000);
 ['click','keydown','touchstart'].forEach(ev=>document.addEventListener(ev,()=>bump(),{passive:true}));
 setTimeout(markReady,6000);
-window.addEventListener('online',()=>{qRetry();if(db&&dirty)flush()});
+window.addEventListener('online',()=>{qRetry();if(db&&dirty)flush();if(cloud.session&&!cloud.active)cloudAttach();else if(cloud.active)cloudPoll()});
 setInterval(qRetry,30000);
 {
   const cf=$('#chip-full'),can=document.fullscreenEnabled||document.webkitFullscreenEnabled;

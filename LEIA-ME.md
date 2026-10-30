@@ -53,6 +53,13 @@ O executável Windows pode funcionar como servidor central, mesmo sem internet. 
 
 Usa apenas uma rede Wi‑Fi de confiança: a ligação local não usa HTTPS. Em redes de convidados com isolamento entre aparelhos, o emparelhamento pode não funcionar. No iPhone, abre o endereço local no Safari; como é HTTP, a instalação como app no ecrã principal não é suportada por todos os navegadores. Neste endereço HTTP local, alguns navegadores não permitem criar cópias cifradas; faz as cópias no PC servidor. As cópias cifradas continuam recomendadas, porque o PC passa a guardar o conjunto partilhado e pode avariar ou perder-se.
 
+### Sincronizar pela internet (Supabase)
+Com a sincronização cloud configurada, cada aparelho pode usar o endereço do GitHub Pages e sincronizar pela internet, sem estar na mesma rede Wi‑Fi. No ecrã de entrada, escolhe **Ligar à conta cloud** e inicia sessão com a conta cloud do dono. Depois, cada pessoa continua a usar o seu PIN COBU local.
+- A primeira ligação envia os dados locais para a cloud se ainda não existir um estado cloud; se já existir, o app carrega-o e junta vendas e fechos locais compatíveis.
+- As alterações ficam guardadas no aparelho e sincronizam automaticamente enquanto houver internet. Se a rede falhar, o app continua localmente e tenta sincronizar de novo.
+- Usa cópias de segurança cifradas regularmente. Se dois aparelhos alterarem o mesmo dado ao mesmo tempo, o app assinala conflitos e mantém a versão cloud para os campos em conflito.
+- Não partilhes chaves `service_role` ou `secret` no app. A chave Publishable/anon é pública; a segurança depende da autenticação e das políticas RLS da base de dados.
+
 ### Transferência manual entre aparelhos
 Sem o executável-servidor ou quando os aparelhos não conseguem comunicar pela rede local, usa a cópia cifrada:
 1. Fecha o turno no aparelho de origem e guarda uma cópia cifrada.
@@ -83,7 +90,8 @@ Sem o executável-servidor ou quando os aparelhos não conseguem comunicar pela 
 - **Empresa e impressão:** configura a identificação e o logótipo, imprime recibos, fechos de turno/diários e relatórios mensais, ou guarda documentos numa pasta nos navegadores compatíveis.
 - **Skins:** Corp apresenta painéis areia e controlos azuis em relevo, inspirados nos POS clássicos WinREST; Costa's usa uma paleta clássica quente; Biolo apresenta categorias e produtos numa grelha com botões terracota. A escolha é individual por conta.
 - **Primeira utilização:** cria o dono e, no primeiro login, configura a empresa antes de começar a usar as mesas.
-- Ao mudar de versão, muda o número em `sw.js` (agora `v19`).
+- **Sincronização cloud:** sessão Supabase do dono, sincronização pela internet e acesso protegido por RLS; os PINs COBU da equipa continuam locais.
+- Ao mudar de versão, muda o número em `sw.js` (agora `v20`).
 
 ## Limites a conhecer
 - O executável para Windows pode servir como servidor local e sincronizar aparelhos na mesma rede Wi‑Fi. Sem o executável-servidor, usa **Juntar dados** para transferir vendas e fechos manualmente.
@@ -92,4 +100,4 @@ Sem o executável-servidor ou quando os aparelhos não conseguem comunicar pela 
 - Play Store tem taxa única da Google e App Store taxa anual da Apple; não são precisas para usar a app.
 
 ## Atualizar a app
-Substitui `index.html` e `sw.js` no alojamento e aumenta o número em `sw.js` (por exemplo, `v18` → `v19`). A app atualiza na abertura seguinte com internet; os dados não se perdem.
+Substitui `index.html` e `sw.js` no alojamento e aumenta o número em `sw.js` (por exemplo, `v19` → `v20`). A app atualiza na abertura seguinte com internet; os dados não se perdem.
