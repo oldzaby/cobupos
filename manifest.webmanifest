@@ -1,7 +1,7 @@
 {
-  "name": "Costa's Burgers POS",
-  "short_name": "Costa's POS",
-  "description": "Pedidos, caixa, estoque e relatórios do Costa's Burgers",
+  "name": "COBU ERP",
+  "short_name": "COBU ERP",
+  "description": "Pedidos, caixa, estoque e relatórios · by zbmusic",
   "lang": "pt",
   "start_url": "./",
   "scope": "./",
