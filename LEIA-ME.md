@@ -58,6 +58,7 @@ Com a sincronização cloud configurada, cada aparelho pode usar o endereço do 
 - A primeira ligação envia os dados locais para a cloud se ainda não existir um estado cloud; se já existir, o app carrega-o e junta vendas e fechos locais compatíveis.
 - As alterações ficam guardadas no aparelho e sincronizam automaticamente enquanto houver internet. Se a rede falhar, o app continua localmente e tenta sincronizar de novo.
 - Usa cópias de segurança cifradas regularmente. Se dois aparelhos alterarem o mesmo dado ao mesmo tempo, o app assinala conflitos e mantém a versão cloud para os campos em conflito.
+- Se esqueceres a palavra-passe cloud, escolhe **Esqueci-me da palavra-passe** no ecrã de ligação ou, com a sessão aberta, **Definições → Sincronização pela internet → Enviar link para redefinir palavra-passe**. No Supabase, em **Authentication → URL Configuration**, configura **Site URL** como `https://oldzaby.github.io/cobupos/` e inclui esse endereço em **Redirect URLs**. O link recebido por e-mail regressa à app para definires uma nova palavra-passe.
 - Não partilhes chaves `service_role` ou `secret` no app. A chave Publishable/anon é pública; a segurança depende da autenticação e das políticas RLS da base de dados.
 
 ### Transferência manual entre aparelhos

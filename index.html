@@ -1109,6 +1109,22 @@ const cloud={
   ownerId:'',revision:0,base:null,pollTimer:null,pushTimer:null,pushing:false,
   authBusy:false,error:'',email:'',conflictNotice:''
 };
+const cloudRecovery={mode:'',token:'',error:'',busy:false};
+function cloudCaptureRecovery(){
+  const params=new URLSearchParams(location.hash.slice(1));
+  const token=params.get('access_token');
+  if(params.get('type')==='recovery'&&token){
+    cloudRecovery.mode='update';cloudRecovery.token=token;
+    history.replaceState(null,'',location.pathname);
+  }else if(params.get('error')){
+    cloudRecovery.mode='request';
+    cloudRecovery.error=params.get('error_code')==='otp_expired'?
+      'Este link expirou ou já foi usado. Pede um novo e-mail de recuperação.':
+      'Não foi possível validar o link. Pede um novo e-mail de recuperação.';
+    history.replaceState(null,'',location.pathname);
+  }
+}
+cloudCaptureRecovery();
 
 /* ---------- armazenamento ---------- */
 function setSync(s){ui.sync=s;paintChips()}
@@ -1519,6 +1535,51 @@ async function cloudLogin(){
       'Não foi possível ligar à cloud. Confirma a internet e tenta novamente.';
     setSync('error');
   }finally{cloud.authBusy=false;if(!cloud.active)renderLogin()}
+}
+async function cloudRecoverySend(){
+  const field=$('#cloud-recovery-email');
+  const email=(field&&field.value.trim())||cloud.email||(cloud.session&&cloud.session.user&&cloud.session.user.email)||'';
+  if(!email){cloudRecovery.error='Indica o e-mail da conta cloud.';renderLogin();return}
+  if(cloudRecovery.busy)return;
+  cloud.email=email;cloudRecovery.busy=true;cloudRecovery.error='A enviar…';renderLogin();
+  try{
+    const redirect=location.origin+location.pathname;
+    await cloudFetch('/auth/v1/recover?redirect_to='+encodeURIComponent(redirect),{
+      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email})
+    },false,false);
+    cloudRecovery.mode='sent';cloudRecovery.error='';
+  }catch(error){
+    cloudRecovery.error=error&&error.message?error.message:'Não foi possível pedir a recuperação. Tenta novamente.';
+  }finally{cloudRecovery.busy=false;renderLogin()}
+}
+async function cloudRecoveryComplete(){
+  const password=($('#cloud-new-password')||{}).value||'';
+  const confirmation=($('#cloud-new-password2')||{}).value||'';
+  if(!cloudRecovery.token){cloudRecovery.mode='request';cloudRecovery.error='O link de recuperação não é válido. Pede um novo e-mail.';renderLogin();return}
+  if(!password){cloudRecovery.error='Indica a nova palavra-passe.';renderLogin();return}
+  if(password!==confirmation){cloudRecovery.error='As palavras-passe não coincidem.';renderLogin();return}
+  if(cloudRecovery.busy)return;
+  cloudRecovery.busy=true;cloudRecovery.error='A atualizar…';renderLogin();
+  try{
+    const response=await fetch(CLOUD_URL+'/auth/v1/user',{
+      method:'PUT',headers:{apikey:CLOUD_PUBLIC_KEY,'Content-Type':'application/json',Authorization:'Bearer '+cloudRecovery.token},
+      body:JSON.stringify({password:password}),cache:'no-store'
+    });
+    const text=await response.text();let data=null;
+    if(text){try{data=JSON.parse(text)}catch(e){throw new Error('O Supabase devolveu uma resposta inválida.')}}
+    if(!response.ok){
+      const message=data&&(data.msg||data.message||data.error_description||data.error);
+      throw new Error(message||'Não foi possível atualizar a palavra-passe. Pede um novo link e tenta novamente.');
+    }
+    cloudRecovery.mode='done';cloudRecovery.token='';cloudRecovery.error='';
+  }catch(error){
+    cloudRecovery.error=error&&error.message?error.message:'Não foi possível atualizar a palavra-passe.';
+  }finally{cloudRecovery.busy=false;renderLogin()}
+}
+function cloudRecoveryBack(){
+  cloudRecovery.mode='';cloudRecovery.token='';cloudRecovery.error='';
+  if(cloud.session)cloudAttach().then(()=>{if(ui.user)render();else renderLogin()});
+  else{markReady();if(ui.user)render();else renderLogin()}
 }
 function cloudLogout(){
   if(!window.confirm('Desligar a conta cloud neste aparelho? Os dados guardados localmente não serão apagados.'))return;
@@ -1950,6 +2011,28 @@ async function savePin(){
 }
 function renderLogin(){
   document.querySelector('.nav').hidden=true;$('.chips').hidden=true;
+  if(cloudRecovery.mode){
+    let panel='';
+    if(cloudRecovery.mode==='request'){
+      panel=`<h3>Recuperar palavra-passe cloud</h3><p class="sub">Vamos enviar um link para o e-mail da conta, se estiver registado.</p>
+        <div class="field"><label for="cloud-recovery-email">E-mail do dono</label><input class="in txt" id="cloud-recovery-email" type="email" autocomplete="username" value="${esc(cloud.email)}"></div>
+        <div class="err" role="alert">${esc(cloudRecovery.error)}</div><button class="btn primary" data-a="cloudRecoverySend" ${cloudRecovery.busy?'disabled':''}>${cloudRecovery.busy?'A enviar…':'Enviar link de recuperação'}</button>
+        <button class="btn" data-a="cloudRecoveryBack">Voltar</button>`;
+    }else if(cloudRecovery.mode==='sent'){
+      panel=`<h3>Verifica o teu e-mail</h3><p class="sub">Se existir uma conta para este endereço, receberás um link de recuperação. Abre-o neste aparelho para definires a nova palavra-passe.</p>
+        <button class="btn primary" data-a="cloudRecoveryBack">Voltar à app</button>`;
+    }else if(cloudRecovery.mode==='update'){
+      panel=`<h3>Definir nova palavra-passe</h3><p class="sub">Escolhe a nova palavra-passe da conta cloud do dono.</p>
+        <div class="field"><label for="cloud-new-password">Nova palavra-passe</label><input class="in txt" id="cloud-new-password" type="password" autocomplete="new-password"></div>
+        <div class="field"><label for="cloud-new-password2">Repete a nova palavra-passe</label><input class="in txt" id="cloud-new-password2" type="password" autocomplete="new-password"></div>
+        <div class="err" role="alert">${esc(cloudRecovery.error)}</div><button class="btn primary" data-a="cloudRecoveryComplete" ${cloudRecovery.busy?'disabled':''}>${cloudRecovery.busy?'A atualizar…':'Guardar nova palavra-passe'}</button>`;
+    }else{
+      panel=`<h3>Palavra-passe atualizada</h3><p class="sub">A nova palavra-passe já está definida. Usa-a para ligar a conta cloud nos outros aparelhos.</p>
+        <button class="btn primary" data-a="cloudRecoveryBack">Voltar à app</button>`;
+    }
+    $('#app').innerHTML=`<div class="login"><div><h2>COBU ERP</h2><p class="sub">Sincronização pela internet</p></div><section class="card settings-panel">${panel}</section></div>`;
+    return;
+  }
   const L=ui.login;let h='<div class="login">';
   if(!ui.ready){
     h+='<div><h2>A carregar…</h2><p class="sub" style="margin:6px 0 0">A ligar à conta do restaurante.</p></div>';
@@ -1978,11 +2061,11 @@ function cloudAccessMarkup(){
   if(!cloud.enabled)return '';
   if(cloud.active)return `<section class="card settings-panel"><h3>Sincronização cloud ativa</h3><p class="sub" style="margin:0">Este aparelho está ligado à conta ${esc(cloud.session&&cloud.session.user&&cloud.session.user.email||'do dono')}. Os dados sincronizam pela internet.</p></section>`;
   if(cloud.session)return `<section class="card settings-panel"><h3>Sincronização cloud</h3><p class="sub" style="margin:0">${esc(cloud.error||'A sessão está guardada neste aparelho, mas ainda não foi possível sincronizar. Os dados locais permanecem disponíveis.')}</p><button class="btn" type="button" data-a="cloudReconnect">Tentar ligar novamente</button></section>`;
-  return `<section class="card settings-panel"><h3>Sincronizar entre aparelhos</h3><p class="sub" style="margin:0">Inicia sessão com o e-mail cloud do dono para carregar os dados do restaurante. Os PINs da equipa continuam a ser usados neste aparelho.</p><div class="field"><label for="cloud-email">E-mail do dono</label><input class="in txt" id="cloud-email" type="email" autocomplete="username" value="${esc(cloud.email)}"></div><div class="field"><label for="cloud-password">Palavra-passe cloud</label><input class="in txt" id="cloud-password" type="password" autocomplete="current-password"></div><div class="err" role="alert">${esc(cloud.error)}</div><button class="btn primary" type="button" data-a="cloudLogin" ${cloud.authBusy?'disabled':''}>${cloud.authBusy?'A ligar…':'Ligar à conta cloud'}</button></section>`;
+  return `<section class="card settings-panel"><h3>Sincronizar entre aparelhos</h3><p class="sub" style="margin:0">Inicia sessão com o e-mail cloud do dono para carregar os dados do restaurante. Os PINs da equipa continuam a ser usados neste aparelho.</p><div class="field"><label for="cloud-email">E-mail do dono</label><input class="in txt" id="cloud-email" type="email" autocomplete="username" value="${esc(cloud.email)}"></div><div class="field"><label for="cloud-password">Palavra-passe cloud</label><input class="in txt" id="cloud-password" type="password" autocomplete="current-password"></div><div class="err" role="alert">${esc(cloud.error)}</div><button class="btn primary" type="button" data-a="cloudLogin" ${cloud.authBusy?'disabled':''}>${cloud.authBusy?'A ligar…':'Ligar à conta cloud'}</button><button class="btn" type="button" data-a="cloudRecovery">Esqueci-me da palavra-passe</button></section>`;
 }
 function cloudSettingsMarkup(){
   if(!cloud.enabled)return '';
-  if(cloud.active)return `<section class="card settings-panel"><h3>Sincronização pela internet</h3><p class="sub" style="margin:0">Ligado como <b>${esc(cloud.session&&cloud.session.user&&cloud.session.user.email||'dono')}</b>. Os dados sincronizam entre aparelhos com internet e também ficam guardados neste aparelho.</p>${ui.user&&ui.user.role==='dono'?'<button class="btn" type="button" data-a="cloudLogout">Desligar conta cloud neste aparelho</button>':''}</section>`;
+  if(cloud.active)return `<section class="card settings-panel"><h3>Sincronização pela internet</h3><p class="sub" style="margin:0">Ligado como <b>${esc(cloud.session&&cloud.session.user&&cloud.session.user.email||'dono')}</b>. Os dados sincronizam entre aparelhos com internet e também ficam guardados neste aparelho.</p>${ui.user&&ui.user.role==='dono'?'<button class="btn" type="button" data-a="cloudRecoveryCurrent">Enviar link para redefinir palavra-passe</button><button class="btn" type="button" data-a="cloudLogout">Desligar conta cloud neste aparelho</button>':''}</section>`;
   return `<section class="card settings-panel"><h3>Sincronização pela internet</h3><p class="sub" style="margin:0">${esc(cloud.error||'Liga a conta cloud do dono para sincronizar os dados entre aparelhos. Os dados locais não são apagados.')}</p><button class="btn" type="button" data-a="cloudConnect">Ligar conta cloud</button></section>`;
 }
 function lanPairMarkup(){
@@ -2812,6 +2895,11 @@ function act(a,d){
   switch(a){
     case 'go':if(!canGo(d.v))break;if(ui.view==='order'&&d.v!=='order')lanReleaseCurrentTable();ui.view=d.v;ui.table=null;closeSheet();render();window.scrollTo(0,0);break;
     case 'cloudLogin':cloudLogin();break;
+    case 'cloudRecovery':cloudRecovery.mode='request';cloudRecovery.error='';renderLogin();break;
+    case 'cloudRecoveryCurrent':cloud.email=cloud.session&&cloud.session.user&&cloud.session.user.email||cloud.email;cloudRecovery.mode='request';cloudRecovery.error='';renderLogin();break;
+    case 'cloudRecoverySend':cloudRecoverySend();break;
+    case 'cloudRecoveryComplete':cloudRecoveryComplete();break;
+    case 'cloudRecoveryBack':cloudRecoveryBack();break;
     case 'cloudConnect':lock();break;
     case 'cloudReconnect':cloudAttach().then(()=>{if(cloud.active)toast('Conta cloud ligada.');render()});break;
     case 'cloudLogout':if(ui.user&&ui.user.role==='dono')cloudLogout();break;
@@ -3030,6 +3118,8 @@ document.addEventListener('change',e=>{
 document.addEventListener('keydown',e=>{
   if(e.key==='Escape'&&ui.sheet)closeSheet();
   if(e.key==='Enter'&&(e.target.id==='cloud-email'||e.target.id==='cloud-password')){e.preventDefault();cloudLogin()}
+  if(e.key==='Enter'&&e.target.id==='cloud-recovery-email'){e.preventDefault();cloudRecoverySend()}
+  if(e.key==='Enter'&&(e.target.id==='cloud-new-password'||e.target.id==='cloud-new-password2')){e.preventDefault();cloudRecoveryComplete()}
   if(!ui.user&&ui.ready&&ui.login.id&&!ui.login.busy){if(/^\d$/.test(e.key))pinKey(e.key);else if(e.key==='Backspace')pinKey('x')}
 });
 setInterval(()=>{if(ui.user&&ui.view==='tables'&&!ui.sheet)render()},60000);
@@ -3691,7 +3781,7 @@ document.addEventListener('input',e=>{
 
 restoreDeviceStorage().then(()=>{if(ui.user&&ui.view==='company')render()});
 render();
-attach();
+if(cloudRecovery.mode){markReady();renderLogin()}else attach();
 })();
 </script>
 <script>
