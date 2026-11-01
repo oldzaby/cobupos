@@ -1006,6 +1006,7 @@ tr:not(:last-child) td{border-bottom-color:color-mix(in srgb,var(--line) 78%,tra
 <script>
 (function(){
 "use strict";
+if('scrollRestoration' in history)history.scrollRestoration='manual';
 const $=s=>document.querySelector(s);
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const nf=n=>String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');
@@ -3803,6 +3804,7 @@ document.addEventListener('input',e=>{
 
 restoreDeviceStorage().then(()=>{if(ui.user&&ui.view==='company')render()});
 render();
+window.scrollTo(0,0);
 if(cloudRecovery.mode){markReady();renderLogin()}else attach();
 })();
 </script>

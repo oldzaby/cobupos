@@ -92,7 +92,7 @@ Sem o executável-servidor ou quando os aparelhos não conseguem comunicar pela 
 - **Skins:** Corp apresenta painéis areia e controlos azuis em relevo, inspirados nos POS clássicos WinREST; Costa's usa uma paleta clássica quente; Biolo apresenta categorias e produtos numa grelha com botões terracota. A escolha é individual por conta.
 - **Primeira utilização:** cria o dono e, no primeiro login, configura a empresa antes de começar a usar as mesas.
 - **Sincronização cloud:** sessão Supabase do dono, sincronização pela internet e acesso protegido por RLS; os PINs COBU da equipa continuam locais.
-- Ao mudar de versão, muda o número em `sw.js` (agora `v22`).
+- Ao mudar de versão, muda o número em `sw.js` (agora `v23`).
 
 ## Limites a conhecer
 - O executável para Windows pode servir como servidor local e sincronizar aparelhos na mesma rede Wi‑Fi. Sem o executável-servidor, usa **Juntar dados** para transferir vendas e fechos manualmente.
