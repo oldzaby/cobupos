@@ -1066,6 +1066,7 @@ const DEFAULT_MENU=[
 const LS='costas-pos-v1';
 const CLOUD_URL='https://jimucduakzozhhugiwmj.supabase.co';
 const CLOUD_PUBLIC_KEY='sb_publishable_b5Qp1VfjxSYd6oiQJDvpqg_-p3hnQgq';
+const CLOUD_RECOVERY_REDIRECT='https://oldzaby.github.io/cobupos/';
 const STANDALONE=!(window.claude&&window.claude.use);
 const lsGet=(k,d)=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch(e){return d}};
 const lsSet=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch(e){lsFull()}};
@@ -1543,8 +1544,7 @@ async function cloudRecoverySend(){
   if(cloudRecovery.busy)return;
   cloud.email=email;cloudRecovery.busy=true;cloudRecovery.error='A enviar…';renderLogin();
   try{
-    const redirect=location.origin+location.pathname;
-    await cloudFetch('/auth/v1/recover?redirect_to='+encodeURIComponent(redirect),{
+    await cloudFetch('/auth/v1/recover?redirect_to='+encodeURIComponent(CLOUD_RECOVERY_REDIRECT),{
       method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email})
     },false,false);
     cloudRecovery.mode='sent';cloudRecovery.error='';
